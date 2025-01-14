@@ -1,0 +1,76 @@
+substitutions:
+  name: ebike
+packages:
+  Kauf.PLF12: github://KaufHA/PLF12/kauf-plf12.yaml
+esphome:
+  name: ${name}
+  name_add_mac_suffix: false
+api:
+  encryption:
+    key: !secret encryption_key
+
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+globals:
+  - id: cooldown_active
+    type: bool
+    initial_value: 'false'
+  - id: cooldown_start_time
+    type: uint32_t
+    initial_value: '0'
+  - id: num_threshold_readings
+    type: uint32_t
+    initial_value: '0'
+
+# Custom power monitoring and control logic
+interval:
+  - interval: 5s
+    then:
+      - lambda: |-
+          const float power = id(wattage).state;
+
+          const uint32_t current_time = millis();
+          const uint32_t cooldown_period = 20 * 60 * 1000;  // 20 minutes in milliseconds
+
+          const uint32_t threshold_readings_limit = 5;
+          
+          // TODO: handle button press.  Maybe just reset cooldown if the relay is closed.  Or, notice if the user turned it on, and disable the auto-off until current hits 0 (battery full or user unplugged).
+
+          if (id(cooldown_active)) {
+            // Check if cooldown period has elapsed
+            if (current_time - id(cooldown_start_time) >= cooldown_period) {
+              id(cooldown_active) = false;
+              ESP_LOGD("custom", "Cooldown period ended");
+
+              id(relay).turn_on();
+            }
+
+          } else {
+
+            // Check if power is in the target range
+            if (power >= 10.0 && power <= 103.0) {
+              id(num_threshold_readings) += 1;
+              ESP_LOGD("custom", "Power in target range: %.1fW - %d so far", power, id(num_threshold_readings));
+            } else {
+              id(num_threshold_readings) = 0;
+            }
+
+            // TODO: it would be neat if subthreshold readings (e.g. 2W) didn't zero the count, so we don't reset it to 0 just after flipping the relay on.
+
+            if (id(num_threshold_readings) >= threshold_readings_limit) {
+              ESP_LOGD("custom", "%d threshold readings, shutting off", id(num_threshold_readings));
+              
+              id(relay).turn_off();
+              
+              // Start cooldown period
+              id(cooldown_active) = true;
+              id(cooldown_start_time) = current_time;
+
+              // Shut off again after just one threshold reading, so we charge the bike less.  But this risks not turning on if the charger takes a moment to ramp up.
+              // num_threshold_readings = threshold_readings_limit - 1;
+              num_threshold_readings = 0;
+            }
+          }
